@@ -1,150 +1,145 @@
-# Proyecto final — Docker, Nginx, Prometheus y Grafana
+# Proyecto final - Proxy inverso y monitoreo con Docker
 
-Proyecto de infraestructura containerizada con **3 instancias Flask**, proxy reverso Nginx,
-Prometheus, Nginx Prometheus Exporter, cAdvisor y Grafana. Se incluye una red Docker
-personalizada, volúmenes persistentes y pruebas de carga desde el equipo host con k6.
+## Descripción del proyecto
+
+En este proyecto configuramos una infraestructura con Docker Compose para ejecutar tres servidores Flask y distribuir las peticiones entre ellos mediante Nginx.
+
+También usamos Prometheus y Grafana para revisar las solicitudes, los tiempos de respuesta y el uso de recursos. Para comprobar el comportamiento de los servidores realizamos pruebas de carga con k6 y una prueba de falla deteniendo temporalmente una instancia.
+
+## Herramientas utilizadas
+
+- Docker y Docker Compose
+- Python y Flask
+- Nginx
+- Prometheus
+- Nginx Prometheus Exporter
+- cAdvisor
+- Grafana
+- Telegraf
+- k6 (para las pruebas)
+
+## Archivos del proyecto
+
+- `backend/`: aplicación Flask, dependencias y Dockerfile.
+- `nginx/`: configuración de Nginx como proxy inverso y balanceador.
+- `prometheus/`: configuración de los servicios que se monitorean.
+- `grafana/`: configuración de Grafana y archivo JSON del dashboard.
+- `monitoring/telegraf/`: configuración de Telegraf para obtener métricas de contenedores.
+- `pruebas/`: scripts `carga.js` y `falla.js` utilizados con k6.
+- `docker-compose.yml`: definición de servicios, red y volúmenes.
+- `.env.example`: ejemplo de variables de entorno.
 
 ## Requisitos previos
 
-- Docker Desktop con motor Docker activo; en Ubuntu/WSL2 habilitar **Settings → Resources → WSL Integration**.
-- Docker Compose v2 (`docker compose version`).
-- Al menos 4 GB de memoria asignada a Docker Desktop.
-- Para pruebas desde la máquina anfitriona: [k6](https://grafana.com/docs/k6/latest/set-up/install-k6/).
-- Puertos locales libres: **8082, 8083, 9091, 3001**.
+- Docker Desktop con Docker Compose v2, o Docker Engine con el complemento Compose.
+- Si se utiliza Ubuntu en WSL2, tener habilitada la integración de Docker Desktop.
+- Puertos locales disponibles: `8082`, `8083`, `9091` y `3001`.
+- k6 instalado en el equipo desde el que se ejecutarán las pruebas.
 
-## 1. Iniciar (en Ubuntu/WSL2)
+## Iniciar el proyecto
+
+Clonar el repositorio y entrar a la carpeta:
 
 ```bash
-cd ~/proyecto_final_docker
+git clone https://github.com/santiagomarino-boop/proyecto-final-docker.git
+cd proyecto-final-docker
+```
+
+Crear el archivo de variables de entorno y configurar la contraseña local de Grafana si es necesario:
+
+```bash
 cp .env.example .env
-# Opcional: abre .env y cambia la contraseña local de Grafana.
+```
+
+Comprobar la configuración e iniciar los contenedores:
+
+```bash
 docker compose config --quiet
 docker compose up -d --build
 docker compose ps
 ```
 
-**No modifica el directorio `~/lab-proxy` del laboratorio anterior.**
+Docker Compose define nueve servicios: `app1`, `app2`, `app3`, `nginx`, `nginx-exporter`, `cadvisor`, `prometheus`, `grafana` y `telegraf`.
 
-## 2. URLs de acceso
+## Direcciones de acceso
 
-| Servicio | Dirección en Chrome | Qué comprobar |
-|---|---|---|
-| Nginx balanceador | http://localhost:8082 | Respuesta JSON, campo `backend` |
-| cAdvisor | http://localhost:8083 | Contenedores y métricas cuando el entorno lo permita |
-| Prometheus | http://localhost:9091 | Status → Target health: **6 targets UP** |
-| Grafana | http://localhost:3001 | Usuario `admin`, contraseña de `.env` |
+| Servicio | Dirección |
+|---|---|
+| Aplicación por Nginx | http://localhost:8082 |
+| cAdvisor | http://localhost:8083 |
+| Prometheus | http://localhost:9091 |
+| Grafana | http://localhost:3001 |
 
-Los seis targets corresponden a **app1, app2, app3, nginx-exporter, cadvisor y prometheus**.
-El dashboard **Proyecto final - Monitoreo** se carga automáticamente desde la carpeta `grafana/dashboards/`.
+Para ingresar a Grafana se utiliza el usuario `admin` y la contraseña establecida en `.env`.
 
-## 3. Comprobar el balanceo
+## Comprobar el balanceo de carga
 
-```bash
-for i in $(seq 1 12); do curl -s http://localhost:8082/; echo; done
-```
-
-Verifica que las respuestas contengan `server 1`, `server 2` y `server 3`.
-Si quieres comprobar las cabeceras: `curl -i http://localhost:8082/`.
-
-## 4. Comprobar métricas
+Nginx distribuye las peticiones entre tres instancias Flask. Cada una indica en su respuesta cuál servidor atendió la solicitud.
 
 ```bash
-curl -s http://localhost:8082/health
-curl -s http://localhost:8083/metrics | head -n 5
+for i in $(seq 1 12); do
+    curl -s http://localhost:8082/
+    echo
+done
 ```
 
-En Prometheus (`http://localhost:9091`), ejecuta en Query:
+Al repetir las solicitudes deben aparecer respuestas de los servidores 1, 2 y 3. También se puede comprobar el estado de la aplicación con:
+
+```bash
+curl http://localhost:8082/health
+```
+
+## Monitoreo
+
+Prometheus recopila las métricas de los tres servidores Flask, el exportador de Nginx, cAdvisor, Telegraf y el propio Prometheus.
+
+En `http://localhost:9091` se puede consultar:
 
 ```promql
 up
-sum by (backend) (rate(flask_http_request_total[1m]))
-histogram_quantile(0.95, sum by (le, backend) (rate(flask_http_request_duration_seconds_bucket[1m])))
-nginx_connections_active
-sum by (name) (rate(container_cpu_usage_seconds_total{name!=""}[1m]))
 ```
 
-**Nota:** en Docker Desktop + WSL2, cAdvisor puede presentar métricas sin las etiquetas
-`name` o `id`, aunque el target aparezca en UP. Si el panel de CPU está vacío,
-usa `docker stats --no-stream` como respaldo y explica la limitación en el informe.
+En nuestras pruebas verificamos siete targets en estado `UP`.
 
-## 5. Ejecutar carga desde la máquina física
+En Grafana se pueden revisar paneles de peticiones por segundo, latencia, consumo de CPU y memoria, conexiones de Nginx, errores HTTP, disponibilidad y actividad de red y disco.
 
-Instala k6 en **Windows** y, desde PowerShell, entra a la carpeta del proyecto (o a `pruebas`):
+Durante la configuración observamos que cAdvisor no mostraba todas las métricas individuales de los contenedores en Docker Desktop con WSL2. Para complementar esa información configuramos Telegraf y corregimos las consultas de los paneles.
 
-```powershell
-k6 run .\pruebas\carga.js
+## Pruebas de carga con k6
+
+Desde el equipo que tenga k6 instalado, ubicarse en la carpeta del proyecto y ejecutar:
+
+```bash
+k6 run pruebas/carga.js
 ```
 
-Como el script envía peticiones a `http://localhost:8082`, también puede ejecutarse desde
-WSL si tienes k6 allí instalado: `k6 run pruebas/carga.js`.
+Durante la ejecución se pueden observar las gráficas de Grafana. En una de las pruebas realizadas obtuvimos 4.526 solicitudes, 100 % de comprobaciones exitosas, 0 % de fallos y una latencia p95 de 354,22 ms. Los resultados pueden variar en otra ejecución.
 
-Durante la prueba, abre Grafana → **Dashboards → Proyecto final → Proyecto final - Monitoreo**,
-selecciona **Last 15 minutes** y **Refresh 5s**. Guarda capturas de las gráficas y del resumen de k6.
+## Prueba de falla de un servidor
 
-## 6. Probar caída de una instancia
+Para generar solicitudes durante la prueba utilizamos:
 
-Terminal B (k6 desde el host):
-
-```powershell
-k6 run .\pruebas\falla.js
+```bash
+k6 run pruebas/falla.js
 ```
 
-Terminal principal (Ubuntu/WSL2), mientras el test está activo:
+Mientras la prueba está activa, desde otra terminal detenemos `app1`:
 
 ```bash
 docker compose stop app1
 ```
 
-En Prometheus consulta `up{job="backends"}`. Tras el siguiente sondeo (5 s), `app1` debería
-marcar **0**, mientras `app2` y `app3` continúan en **1**. En Grafana, las series de `server 2`
-y `server 3` deben seguir atendiendo solicitudes. Toma evidencia antes de recuperar la instancia.
-
-Para recuperarla:
+Comprobamos la disponibilidad con la consulta `up{job="backends"}` en Prometheus y verificamos que las otras instancias siguen atendiendo solicitudes. Después recuperamos el servidor:
 
 ```bash
 docker compose start app1
 docker compose ps
 ```
 
-No inventes un tiempo de recuperación: mídelo o aclara que no pudo medirse.
-
-## 7. Evidencias para el informe
-
-1. `docker compose ps` con los **8 servicios** activos (no incluye k6 instalado en el host).
-2. `curl` alternando entre **tres** backends.
-3. Prometheus **Target health 6/6 UP**.
-4. Grafana con gráficas durante k6.
-5. Resumen final real de k6 (HTTP, latencia p95, throughput, errores).
-6. Prueba de falla de `app1`, Prometheus `up` y recuperación.
-7. `docker stats` cuando cAdvisor no muestre datos individuales.
-
-Copia los resultados y las capturas reales al archivo `informe/Informe_Proyecto_Final.docx`.
-
-## 8. Publicar el repositorio
-
-```bash
-git init
-git add .
-git commit -m "Proyecto final de monitoreo con Docker"
-# Crea un repositorio vacío en GitHub y copia su URL:
-git branch -M main
-git remote add origin URL_DE_TU_REPOSITORIO
-git push -u origin main
-```
-
-**No subas `.env` al repositorio:** está incluido en `.gitignore`.
-
-## 9. Apagar sin perder el trabajo
+## Detener la infraestructura
 
 ```bash
 docker compose down
 ```
 
-Los datos de Prometheus y Grafana permanecen en volúmenes con nombre.
-No ejecutes `docker compose down -v` salvo que quieras **eliminar los datos**.
-
-## Entrega final
-
-En la plataforma, cada integrante entrega individualmente:
-**PDF del informe con todos los nombres**, URL del **repositorio GitHub** y URL del
-**video de presentación (máximo 10 minutos)**. Cada integrante debe aparecer al menos **un minuto**.
+Este comando detiene y retira los contenedores sin eliminar los volúmenes de datos de Prometheus y Grafana.
