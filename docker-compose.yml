@@ -1,0 +1,142 @@
+name: proyecto-final
+
+services:
+  app1: &backend
+    build: ./backend
+    image: proyecto-final-backend:local
+    environment:
+      SERVER_NAME: "server 1"
+    expose:
+      - "5000"
+    healthcheck: &backend_health
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/health', timeout=2)"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    networks:
+      - lab_monitor
+    restart: unless-stopped
+
+  app2:
+    <<: *backend
+    environment:
+      SERVER_NAME: "server 2"
+
+  app3:
+    <<: *backend
+    environment:
+      SERVER_NAME: "server 3"
+
+  nginx:
+    image: nginx:1.27-alpine
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    ports:
+      - "127.0.0.1:8082:80"
+    depends_on:
+      app1:
+        condition: service_healthy
+      app2:
+        condition: service_healthy
+      app3:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    networks:
+      - lab_monitor
+    restart: unless-stopped
+
+  nginx-exporter:
+    image: nginx/nginx-prometheus-exporter:1.4.2
+    command:
+      - "--nginx.scrape-uri=http://nginx:8088/stub_status"
+    depends_on:
+      nginx:
+        condition: service_started
+    expose:
+      - "9113"
+    networks:
+      - lab_monitor
+    restart: unless-stopped
+
+  cadvisor:
+    image: ghcr.io/google/cadvisor:0.56.2
+    command:
+      - "--housekeeping_interval=5s"
+      - "--docker_only=true"
+    privileged: true
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+    ports:
+      - "127.0.0.1:8083:8080"
+    networks:
+      - lab_monitor
+    restart: unless-stopped
+
+  telegraf:
+    image: telegraf:1.40.3
+    user: "0:0"
+    group_add:
+      - "1001"
+    volumes:
+      - ./monitoring/telegraf/telegraf.conf:/etc/telegraf/telegraf.conf:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - lab_monitor
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v3.13.5
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=7d"
+      - "--web.enable-lifecycle"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "127.0.0.1:9091:9090"
+    depends_on:
+      - app1
+      - app2
+      - app3
+      - nginx-exporter
+      - cadvisor
+    networks:
+      - lab_monitor
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:12.4.0
+    environment:
+      GF_SECURITY_ADMIN_USER: "admin"
+      GF_SECURITY_ADMIN_PASSWORD: "${GRAFANA_ADMIN_PASSWORD:-cambiar-esta-clave}"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "127.0.0.1:3001:3000"
+    depends_on:
+      - prometheus
+    networks:
+      - lab_monitor
+    restart: unless-stopped
+
+networks:
+  lab_monitor:
+    name: proyecto_final_monitor_net
+    driver: bridge
+
+volumes:
+  prometheus_data:
+  grafana_data:
